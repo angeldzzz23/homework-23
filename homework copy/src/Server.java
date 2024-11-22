@@ -29,39 +29,6 @@ public class Server {
         this.running = true;
     }
 
-//    private void loadTopology(String filename) throws IOException {
-//        try (BufferedReader reader = new BufferedReader(new FileReader(filename))) {
-//            numServers = Integer.parseInt(reader.readLine().trim());
-//            int numNeighbors = Integer.parseInt(reader.readLine().trim());
-//
-//            String[] serverInfo = reader.readLine().trim().split("\\s+");
-//            this.serverId = Integer.parseInt(serverInfo[0]);
-//            this.serverIp = serverInfo[1];
-//            this.serverPort = Integer.parseInt(serverInfo[2]);
-//
-//            for (int i = 1; i <= numServers; i++) {
-//                if (i != serverId) {
-//                    routingTable.put(i, new RoutingEntry(i, -1, Integer.MAX_VALUE));
-//                }
-//            }
-//
-//            for (int i = 0; i < numNeighbors; i++) {
-//                String[] linkInfo = reader.readLine().trim().split("\\s+");
-//                int server1 = Integer.parseInt(linkInfo[0]);
-//                //
-//                int server2 = Integer.parseInt(linkInfo[1]);
-//                int cost = Integer.parseInt(linkInfo[2]);
-//
-//                if (server1 == serverId) {
-//                    neighbors.put(server2, new ServerInfo(server2, serverIp, -1));
-//                    routingTable.put(server2, new RoutingEntry(server2, server2, cost));
-//                } else if (server2 == serverId) {
-//                    neighbors.put(server1, new ServerInfo(server1, serverIp, -1));
-//                    routingTable.put(server1, new RoutingEntry(server1, server1, cost));
-//                }
-//            }
-//        }
-//    }
 
     private void loadTopology(String filename) throws IOException {
 
