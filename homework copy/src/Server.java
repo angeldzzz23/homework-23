@@ -231,6 +231,7 @@ public class Server {
     }
 
     private void receiveUpdates(Connection conn) {
+        System.out.println(conn);
         while (running) {
             try {
                 Object received = conn.getInputStream().readObject();
@@ -251,13 +252,34 @@ public class Server {
         }
     }
 
+    //handling connection failure
     private void handleConnectionFailure(int neighborId) {
+        // Remove connection
         Connection conn = connections.remove(neighborId);
         if (conn != null) {
             try {
                 conn.getSocket().close();
             } catch (IOException ignored) {}
-            routingTable.put(neighborId, new RoutingEntry(neighborId, neighborId, Integer.MAX_VALUE));
+        }
+
+        // Mark direct route to failed neighbor as infinite
+        routingTable.put(neighborId, new RoutingEntry(neighborId, neighborId, Integer.MAX_VALUE));
+
+        // Find and invalidate all routes that went through the failed neighbor
+        boolean changed = false;
+        for (Map.Entry<Integer, RoutingEntry> entry : routingTable.entrySet()) {
+            if (entry.getValue().getNextHop() == neighborId) {
+                routingTable.put(entry.getKey(),
+                        new RoutingEntry(entry.getKey(), -1, Integer.MAX_VALUE));
+                changed = true;
+            }
+        }
+
+        // Clean up monitoring state
+        lastUpdateTime.remove(neighborId);
+
+        // Propagate changes if any routes were invalidated
+        if (changed) {
             sendRoutingUpdate();
         }
     }
@@ -265,47 +287,96 @@ public class Server {
     private void updateRoutingTable(RoutingUpdate update) {
         int sourceId = update.getServerId();
         Map<Integer, RoutingEntry> receivedRoutes = update.getRoutes();
-
         boolean changed = false;
+
+        // Get the current link cost to the source
+        int linkCostToSource = routingTable.get(sourceId).getCost();
+
+        // First, identify routes that need to be invalidated
+        Set<Integer> destinations = new HashSet<>();
+        for (Map.Entry<Integer, RoutingEntry> entry : routingTable.entrySet()) {
+            if (entry.getValue().getNextHop() == sourceId) {
+                destinations.add(entry.getKey());
+            }
+        }
+
+        // Process received routes
         for (Map.Entry<Integer, RoutingEntry> entry : receivedRoutes.entrySet()) {
             int destId = entry.getKey();
             int receivedCost = entry.getValue().getCost();
 
-            if (destId == serverId) continue;
+            if (destId == serverId) continue; // Skip routes to self
 
-            int newCost = (receivedCost == Integer.MAX_VALUE ||
-                    routingTable.get(sourceId).getCost() == Integer.MAX_VALUE)
-                    ? Integer.MAX_VALUE
-                    : receivedCost + routingTable.get(sourceId).getCost();
+            // Calculate new cost including the link cost to source
+            int newCost;
+            if (receivedCost == Integer.MAX_VALUE || linkCostToSource == Integer.MAX_VALUE) {
+                newCost = Integer.MAX_VALUE;
+            } else {
+                // Check for integer overflow
+                long totalCost = (long) receivedCost + (long) linkCostToSource;
+                newCost = totalCost > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) totalCost;
+            }
 
             RoutingEntry currentEntry = routingTable.get(destId);
-            if (currentEntry.getNextHop() == sourceId || newCost < currentEntry.getCost()) {
+            if (currentEntry == null) {
+                // New destination discovered
+                routingTable.put(destId, new RoutingEntry(destId, sourceId, newCost));
+                changed = true;
+                continue;
+            }
+
+            // Remove from invalidation set if we received an update
+            destinations.remove(destId);
+
+            // Update route if:
+            // 1. Current route goes through source (forced update)
+            // 2. New route is better than current route
+            // 3. Current route is through a failed link (cost = MAX_VALUE)
+            if (currentEntry.getNextHop() == sourceId ||
+                    newCost < currentEntry.getCost() ||
+                    currentEntry.getCost() == Integer.MAX_VALUE) {
+
                 routingTable.put(destId, new RoutingEntry(destId, sourceId, newCost));
                 changed = true;
             }
         }
+
+        // Invalidate routes that weren't included in the update but went through the source
+        for (int destId : destinations) {
+            routingTable.put(destId, new RoutingEntry(destId, -1, Integer.MAX_VALUE));
+            changed = true;
+        }
+
+        // If routes changed, propagate updates to neighbors
+        if (changed) {
+            sendRoutingUpdate();
+        }
     }
 
+
+
+
     private void checkTimeouts() {
-        while (running) {
-            try {
-                Thread.sleep(updateInterval);
-                long currentTime = System.currentTimeMillis();
+            long currentTime = System.currentTimeMillis();
+            Set<Integer> failedNeighbors = new HashSet<>();
 
-                for (Map.Entry<Integer, Connection> entry : new HashMap<>(connections).entrySet()) {
-                    int neighborId = entry.getKey();
-                    Long lastUpdate = lastUpdateTime.get(neighborId);
+            // Identify all neighbors that have timed out
+            for (Map.Entry<Integer, Connection> entry : connections.entrySet()) {
+                int neighborId = entry.getKey();
+                Long lastUpdate = lastUpdateTime.get(neighborId);
 
-                    if (lastUpdate != null &&
-                            (currentTime - lastUpdate) > (TIMEOUT_MULTIPLIER * updateInterval)) {
-                        handleConnectionFailure(neighborId);
-                    }
+                if (lastUpdate != null &&
+                        (currentTime - lastUpdate) > (TIMEOUT_MULTIPLIER * updateInterval)) {
+                    failedNeighbors.add(neighborId);
                 }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
             }
-        }
+
+        // Handle all failures at once to prevent multiple routing table updates
+            if (!failedNeighbors.isEmpty()) {
+                for (int neighborId : failedNeighbors) {
+                    handleConnectionFailure(neighborId);
+                }
+            }
     }
 
     private void handleUpdate(String[] parts) {
