@@ -19,6 +19,8 @@ public class Server {
     private volatile boolean running;
     private Map<Integer, Long> lastUpdateTime;
     private static final int TIMEOUT_MULTIPLIER = 3;
+    private static final int HEADER_SIZE = 8;
+    private static final int ENTRY_SIZE = 8;
 
     public Server() {
         this.routingTable = new ConcurrentHashMap<>();
@@ -26,26 +28,26 @@ public class Server {
         this.connections = new ConcurrentHashMap<>();
         this.lastUpdateTime = new ConcurrentHashMap<>();
         this.packetCount = 0;
-        this.running = true;
+        this.running = false;
     }
 
-
     private void loadTopology(String filename) throws IOException {
-
         try (BufferedReader reader = new BufferedReader(new FileReader(filename))) {
-            numServers = Integer.parseInt(reader.readLine().trim()); // Number of servers
-            int numNeighbors = Integer.parseInt(reader.readLine().trim()); // Number of neighbors
+            numServers = Integer.parseInt(reader.readLine().trim());
+            int numNeighbors = Integer.parseInt(reader.readLine().trim());
 
-            // Read the current server's info
             String[] serverInfo = reader.readLine().trim().split("\\s+");
             this.serverId = Integer.parseInt(serverInfo[0]);
             this.serverIp = serverInfo[1];
             this.serverPort = Integer.parseInt(serverInfo[2]);
 
-            // Parse all server information
+            // Add self-route with cost 0
+            routingTable.put(serverId, new RoutingEntry(serverId, serverId, 0));
+
             Map<Integer, ServerInfo> allServers = new HashMap<>();
-            allServers.put(serverId, new ServerInfo(serverId, serverIp, serverPort)); // Add current server
-            for (int i = 0; i < numNeighbors; i++) { // Read the remaining servers
+            allServers.put(serverId, new ServerInfo(serverId, serverIp, serverPort));
+
+            for (int i = 0; i < numNeighbors; i++) {
                 String[] otherServerInfo = reader.readLine().trim().split("\\s+");
                 int id = Integer.parseInt(otherServerInfo[0]);
                 String ip = otherServerInfo[1];
@@ -53,17 +55,13 @@ public class Server {
                 allServers.put(id, new ServerInfo(id, ip, port));
             }
 
-            // Initialize the routing table
-            // TODO:  This is wrong
-            // Initialize the routing table with default values for all servers except the current one
             for (Map.Entry<Integer, ServerInfo> entry : allServers.entrySet()) {
                 int id = entry.getKey();
-                if (id != serverId) { // Skip the current server itself
-                    routingTable.put(id, new RoutingEntry(id, -1, Integer.MAX_VALUE)); // Default to unreachable
+                if (id != serverId) {
+                    routingTable.put(id, new RoutingEntry(id, -1, Integer.MAX_VALUE));
                 }
             }
 
-            // Parse neighbor information
             for (int i = 0; i < numNeighbors; i++) {
                 String[] linkInfo = reader.readLine().trim().split("\\s+");
                 int server1 = Integer.parseInt(linkInfo[0]);
@@ -78,15 +76,13 @@ public class Server {
                     routingTable.put(server1, new RoutingEntry(server1, server1, cost));
                 }
             }
-
         }
-
     }
 
     private void start() {
+        if (!running) return;
         new Thread(this::acceptConnections).start();
         new Thread(this::periodicUpdate).start();
-        new Thread(this::checkTimeouts).start();
         connectToNeighbors();
     }
 
@@ -125,10 +121,11 @@ public class Server {
         }
     }
 
+
     private void connectToNeighbors() {
         for (Map.Entry<Integer, ServerInfo> entry : neighbors.entrySet()) {
             int neighborId = entry.getKey();
-            if (neighborId > serverId) {
+            if (neighborId != serverId) {
                 try {
                     Socket socket = new Socket(entry.getValue().getIp(), entry.getValue().getPort());
                     ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
@@ -147,9 +144,10 @@ public class Server {
         }
     }
 
+
     public void processCommands() {
         Scanner scanner = new Scanner(System.in);
-        while (running) {
+        while (true) {
             String command = scanner.nextLine().trim();
             String[] parts = command.split("\\s+");
 
@@ -159,23 +157,49 @@ public class Server {
                         handleServerCommand(parts);
                         break;
                     case "update":
+                        if (!running) {
+                            System.out.println(command + " ERROR: Server not running");
+                            continue;
+                        }
                         handleUpdate(parts);
                         break;
                     case "step":
+                        if (!running) {
+                            System.out.println(command + " ERROR: Server not running");
+                            continue;
+                        }
                         handleStep();
                         break;
                     case "packets":
+                        if (!running) {
+                            System.out.println(command + " ERROR: Server not running");
+                            continue;
+                        }
                         handlePackets();
                         break;
                     case "display":
+
+//                        if (!running) {
+//                            System.out.println(command + " ERROR: Server not running");
+//                            continue;
+//                        }
+
                         handleDisplay();
                         break;
                     case "disable":
+                        if (!running) {
+                            System.out.println(command + " ERROR: Server not running");
+                            continue;
+                        }
                         handleDisable(parts);
                         break;
                     case "crash":
+                        if (!running) {
+                            System.out.println(command + " ERROR: Server not running");
+                            continue;
+                        }
                         handleCrash();
-                        break;
+                        return;
                     default:
                         System.out.println(command + " ERROR: Invalid command");
                 }
@@ -183,7 +207,6 @@ public class Server {
                 System.out.println(command + " ERROR: " + e.getMessage());
             }
         }
-        scanner.close();
     }
 
     private void handleServerCommand(String[] parts) throws Exception {
@@ -198,6 +221,7 @@ public class Server {
             loadTopology(topologyFile);
             this.serverSocket = new ServerSocket(serverPort);
             this.updateInterval = updateInterval * 1000;
+            this.running = true;
             start();
             System.out.println("server -t " + topologyFile + " -i " + updateInterval + " SUCCESS");
         } catch (Exception e) {
@@ -209,6 +233,7 @@ public class Server {
         while (running) {
             try {
                 Thread.sleep(updateInterval);
+                checkTimeouts();
                 sendRoutingUpdate();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -218,6 +243,7 @@ public class Server {
     }
 
     private void sendRoutingUpdate() {
+
         RoutingUpdate update = new RoutingUpdate(serverId, routingTable);
         for (Connection conn : connections.values()) {
             try {
@@ -231,15 +257,17 @@ public class Server {
     }
 
     private void receiveUpdates(Connection conn) {
-        System.out.println(conn);
         while (running) {
             try {
                 Object received = conn.getInputStream().readObject();
                 if (received instanceof RoutingUpdate) {
+
+
                     RoutingUpdate update = (RoutingUpdate) received;
                     packetCount++;
-                    System.out.println("RECEIVED A MESSAGE FROM SERVER " + update.getServerId());
                     lastUpdateTime.put(conn.getNeighborId(), System.currentTimeMillis());
+                    //
+//                    conn.updateLastReceivedRoutes(update.getRoutes());
                     updateRoutingTable(update);
                 }
             } catch (Exception e) {
@@ -254,7 +282,6 @@ public class Server {
 
     //handling connection failure
     private void handleConnectionFailure(int neighborId) {
-        // Remove connection
         Connection conn = connections.remove(neighborId);
         if (conn != null) {
             try {
@@ -262,10 +289,8 @@ public class Server {
             } catch (IOException ignored) {}
         }
 
-        // Mark direct route to failed neighbor as infinite
         routingTable.put(neighborId, new RoutingEntry(neighborId, neighborId, Integer.MAX_VALUE));
 
-        // Find and invalidate all routes that went through the failed neighbor
         boolean changed = false;
         for (Map.Entry<Integer, RoutingEntry> entry : routingTable.entrySet()) {
             if (entry.getValue().getNextHop() == neighborId) {
@@ -275,10 +300,8 @@ public class Server {
             }
         }
 
-        // Clean up monitoring state
         lastUpdateTime.remove(neighborId);
 
-        // Propagate changes if any routes were invalidated
         if (changed) {
             sendRoutingUpdate();
         }
@@ -289,65 +312,34 @@ public class Server {
         Map<Integer, RoutingEntry> receivedRoutes = update.getRoutes();
         boolean changed = false;
 
-        // Get the current link cost to the source
         int linkCostToSource = routingTable.get(sourceId).getCost();
 
-        // First, identify routes that need to be invalidated
-        Set<Integer> destinations = new HashSet<>();
-        for (Map.Entry<Integer, RoutingEntry> entry : routingTable.entrySet()) {
-            if (entry.getValue().getNextHop() == sourceId) {
-                destinations.add(entry.getKey());
-            }
-        }
-
-        // Process received routes
         for (Map.Entry<Integer, RoutingEntry> entry : receivedRoutes.entrySet()) {
             int destId = entry.getKey();
             int receivedCost = entry.getValue().getCost();
 
-            if (destId == serverId) continue; // Skip routes to self
+            if (destId == serverId) continue;
 
-            // Calculate new cost including the link cost to source
-            int newCost;
-            if (receivedCost == Integer.MAX_VALUE || linkCostToSource == Integer.MAX_VALUE) {
-                newCost = Integer.MAX_VALUE;
-            } else {
-                // Check for integer overflow
-                long totalCost = (long) receivedCost + (long) linkCostToSource;
-                newCost = totalCost > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) totalCost;
-            }
-
-            RoutingEntry currentEntry = routingTable.get(destId);
-            if (currentEntry == null) {
-                // New destination discovered
-                routingTable.put(destId, new RoutingEntry(destId, sourceId, newCost));
-                changed = true;
+            if (receivedCost == Integer.MAX_VALUE) {
+                if (routingTable.containsKey(destId) &&
+                        routingTable.get(destId).getNextHop() == sourceId) {
+                    routingTable.put(destId, new RoutingEntry(destId, -1, Integer.MAX_VALUE));
+                    changed = true;
+                }
                 continue;
             }
 
-            // Remove from invalidation set if we received an update
-            destinations.remove(destId);
+            long totalCost = (long) receivedCost + (long) linkCostToSource;
+            int newCost = totalCost > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) totalCost;
 
-            // Update route if:
-            // 1. Current route goes through source (forced update)
-            // 2. New route is better than current route
-            // 3. Current route is through a failed link (cost = MAX_VALUE)
-            if (currentEntry.getNextHop() == sourceId ||
-                    newCost < currentEntry.getCost() ||
-                    currentEntry.getCost() == Integer.MAX_VALUE) {
-
+            RoutingEntry currentEntry = routingTable.get(destId);
+            if (currentEntry == null || newCost < currentEntry.getCost() ||
+                    currentEntry.getNextHop() == sourceId) {
                 routingTable.put(destId, new RoutingEntry(destId, sourceId, newCost));
                 changed = true;
             }
         }
 
-        // Invalidate routes that weren't included in the update but went through the source
-        for (int destId : destinations) {
-            routingTable.put(destId, new RoutingEntry(destId, -1, Integer.MAX_VALUE));
-            changed = true;
-        }
-
-        // If routes changed, propagate updates to neighbors
         if (changed) {
             sendRoutingUpdate();
         }
@@ -355,12 +347,10 @@ public class Server {
 
 
 
-
     private void checkTimeouts() {
         long currentTime = System.currentTimeMillis();
         Set<Integer> failedNeighbors = new HashSet<>();
 
-        // Identify all neighbors that have timed out
         for (Map.Entry<Integer, Connection> entry : connections.entrySet()) {
             int neighborId = entry.getKey();
             Long lastUpdate = lastUpdateTime.get(neighborId);
@@ -371,11 +361,8 @@ public class Server {
             }
         }
 
-        // Handle all failures at once to prevent multiple routing table updates
-        if (!failedNeighbors.isEmpty()) {
-            for (int neighborId : failedNeighbors) {
-                handleConnectionFailure(neighborId);
-            }
+        for (int neighborId : failedNeighbors) {
+            handleConnectionFailure(neighborId);
         }
     }
 
@@ -415,16 +402,24 @@ public class Server {
 
     private void handleDisplay() {
         System.out.println("display SUCCESS");
+
+        // Convert routing table entries to a list for sorting
         List<Map.Entry<Integer, RoutingEntry>> sortedEntries =
                 new ArrayList<>(routingTable.entrySet());
+
+        // Sort by destination ID (key)
         sortedEntries.sort(Map.Entry.comparingByKey());
 
+        // Display only live connections (those with cost < Integer.MAX_VALUE)
         for (Map.Entry<Integer, RoutingEntry> entry : sortedEntries) {
             RoutingEntry route = entry.getValue();
-            System.out.printf("%d %d %d%n",
-                    route.getDestination(),
-                    route.getNextHop(),
-                    route.getCost() == Integer.MAX_VALUE ? -1 : route.getCost());
+            // Only display routes that are reachable (cost is not infinity)
+            if (route.getCost() < Integer.MAX_VALUE) {
+                System.out.printf("%d %d %d%n",
+                        route.getDestination(),
+                        route.getNextHop(),
+                        route.getCost());
+            }
         }
     }
 

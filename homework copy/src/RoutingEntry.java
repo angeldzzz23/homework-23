@@ -12,7 +12,15 @@ class RoutingEntry implements Serializable {
         this.cost = cost;
     }
 
-    public int getDestination() { return destination; }
-    public int getNextHop() { return nextHop; }
-    public int getCost() { return cost; }
+    public int getDestination() {
+        return destination;
+    }
+
+    public int getNextHop() {
+        return nextHop;
+    }
+
+    public int getCost() {
+        return cost;
+    }
 }

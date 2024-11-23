@@ -12,7 +12,15 @@ class ServerInfo implements Serializable {
         this.port = port;
     }
 
-    public int getId() { return id; }
-    public String getIp() { return ip; }
-    public int getPort() { return port; }
+    public int getId() {
+        return id;
+    }
+
+    public String getIp() {
+        return ip;
+    }
+
+    public int getPort() {
+        return port;
+    }
 }

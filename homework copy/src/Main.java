@@ -13,11 +13,10 @@ import java.util.*;
 import java.util.concurrent.*;
 
 public class Main {
-
     public static void main(String[] args) {
         try {
             Server server = new Server();
-            server.processCommands();
+            server.processCommands(); // This will now wait for the "server" command
         } catch (Exception e) {
             System.err.println("Failed to start server: " + e.getMessage());
         }
