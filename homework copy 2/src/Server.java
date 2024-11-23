@@ -273,9 +273,11 @@ public class Server {
     }
 
     private void receiveUpdates(Connection conn) {
+
         while (running) {
             try {
                 Object received = conn.getInputStream().readObject();
+
                 if (received instanceof RoutingUpdate) {
 
 
@@ -287,8 +289,7 @@ public class Server {
                         int originalCost = originalCosts.get(neighborId);
                         routingTable.put(neighborId, new RoutingEntry(neighborId, neighborId, originalCost));
                     }
-                    //
-//                    conn.updateLastReceivedRoutes(update.getRoutes());
+
                     updateRoutingTable(update);
                 }
             } catch (Exception e) {

@@ -275,7 +275,13 @@ public class Server {
     private void receiveUpdates(Connection conn) {
         while (running) {
             try {
+                System.out.println("receving " + conn.getInputStream().readObject().toString());
+                System.out.println("connection status " + conn.getNeighborId());
+
                 Object received = conn.getInputStream().readObject();
+
+
+                System.out.println("conn: " + conn.getInputStream().readObject());
                 if (received instanceof RoutingUpdate) {
 
 
