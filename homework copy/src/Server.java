@@ -21,12 +21,14 @@ public class Server {
     private static final int TIMEOUT_MULTIPLIER = 3;
     private static final int HEADER_SIZE = 8;
     private static final int ENTRY_SIZE = 8;
+    private Map<Integer, Integer> originalCosts; // Add this as a class field
 
     public Server() {
         this.routingTable = new ConcurrentHashMap<>();
         this.neighbors = new ConcurrentHashMap<>();
         this.connections = new ConcurrentHashMap<>();
         this.lastUpdateTime = new ConcurrentHashMap<>();
+        this.originalCosts = new ConcurrentHashMap<>(); // Initialize it
         this.packetCount = 0;
         this.running = false;
     }
@@ -71,9 +73,12 @@ public class Server {
                 if (server1 == serverId) {
                     neighbors.put(server2, allServers.get(server2));
                     routingTable.put(server2, new RoutingEntry(server2, server2, cost));
+                    originalCosts.put(server2, cost); // Store original cost
+
                 } else if (server2 == serverId) {
                     neighbors.put(server1, allServers.get(server1));
                     routingTable.put(server1, new RoutingEntry(server1, server1, cost));
+                    originalCosts.put(server1, cost); // Store original cost
                 }
             }
         }
@@ -136,14 +141,25 @@ public class Server {
 
                     Connection conn = new Connection(socket, in, out, neighborId);
                     connections.put(neighborId, conn);
+
+                    // Restore original cost from saved costs
+                    if (originalCosts.containsKey(neighborId)) {
+                        int originalCost = originalCosts.get(neighborId);
+                        routingTable.put(neighborId, new RoutingEntry(neighborId, neighborId, originalCost));
+                        // setn immediate updatr
+                        sendRoutingUpdate();
+                    }
+
                     new Thread(() -> receiveUpdates(conn)).start();
+
+                    // Send immediate update
+                    sendRoutingUpdate();
                 } catch (IOException e) {
                     System.err.println("Failed to connect to neighbor " + neighborId);
                 }
             }
         }
     }
-
 
     public void processCommands() {
         Scanner scanner = new Scanner(System.in);
@@ -266,6 +282,11 @@ public class Server {
                     RoutingUpdate update = (RoutingUpdate) received;
                     packetCount++;
                     lastUpdateTime.put(conn.getNeighborId(), System.currentTimeMillis());
+                    int neighborId = conn.getNeighborId();
+                    if (originalCosts.containsKey(neighborId)) {
+                        int originalCost = originalCosts.get(neighborId);
+                        routingTable.put(neighborId, new RoutingEntry(neighborId, neighborId, originalCost));
+                    }
                     //
 //                    conn.updateLastReceivedRoutes(update.getRoutes());
                     updateRoutingTable(update);
@@ -288,14 +309,13 @@ public class Server {
                 conn.getSocket().close();
             } catch (IOException ignored) {}
         }
-
-        routingTable.put(neighborId, new RoutingEntry(neighborId, neighborId, Integer.MAX_VALUE));
+        // Keep the original cost in the originalCosts map but mark as unreachable in routing table
+        routingTable.put(neighborId, new RoutingEntry(neighborId, -1, Integer.MAX_VALUE));
 
         boolean changed = false;
         for (Map.Entry<Integer, RoutingEntry> entry : routingTable.entrySet()) {
             if (entry.getValue().getNextHop() == neighborId) {
-                routingTable.put(entry.getKey(),
-                        new RoutingEntry(entry.getKey(), -1, Integer.MAX_VALUE));
+                routingTable.put(entry.getKey(), new RoutingEntry(entry.getKey(), -1, Integer.MAX_VALUE));
                 changed = true;
             }
         }
@@ -307,10 +327,24 @@ public class Server {
         }
     }
 
+
+    // updating routing table
     private void updateRoutingTable(RoutingUpdate update) {
         int sourceId = update.getServerId();
         Map<Integer, RoutingEntry> receivedRoutes = update.getRoutes();
         boolean changed = false;
+
+        // If this is from a neighbor, restore the direct connection cost
+        if (neighbors.containsKey(sourceId)) {
+            int directCost = routingTable.get(sourceId).getCost();
+            if (directCost == Integer.MAX_VALUE) {
+                // This is a reconnection - restore original cost from topology
+                RoutingEntry originalEntry = routingTable.get(sourceId);
+                routingTable.put(sourceId,
+                        new RoutingEntry(sourceId, sourceId, originalEntry.getCost()));
+                changed = true;
+            }
+        }
 
         int linkCostToSource = routingTable.get(sourceId).getCost();
 
@@ -323,7 +357,8 @@ public class Server {
             if (receivedCost == Integer.MAX_VALUE) {
                 if (routingTable.containsKey(destId) &&
                         routingTable.get(destId).getNextHop() == sourceId) {
-                    routingTable.put(destId, new RoutingEntry(destId, -1, Integer.MAX_VALUE));
+                    routingTable.put(destId,
+                            new RoutingEntry(destId, -1, Integer.MAX_VALUE));
                     changed = true;
                 }
                 continue;
@@ -333,8 +368,9 @@ public class Server {
             int newCost = totalCost > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) totalCost;
 
             RoutingEntry currentEntry = routingTable.get(destId);
-            if (currentEntry == null || newCost < currentEntry.getCost() ||
-                    currentEntry.getNextHop() == sourceId) {
+            if (currentEntry == null ||
+                    newCost < currentEntry.getCost() ||
+                    (currentEntry.getNextHop() == sourceId && newCost != currentEntry.getCost())) {
                 routingTable.put(destId, new RoutingEntry(destId, sourceId, newCost));
                 changed = true;
             }
@@ -344,7 +380,6 @@ public class Server {
             sendRoutingUpdate();
         }
     }
-
 
 
     private void checkTimeouts() {
@@ -403,18 +438,18 @@ public class Server {
     private void handleDisplay() {
         System.out.println("display SUCCESS");
 
-        // Convert routing table entries to a list for sorting
         List<Map.Entry<Integer, RoutingEntry>> sortedEntries =
                 new ArrayList<>(routingTable.entrySet());
-
-        // Sort by destination ID (key)
         sortedEntries.sort(Map.Entry.comparingByKey());
 
-        // Display only live connections (those with cost < Integer.MAX_VALUE)
         for (Map.Entry<Integer, RoutingEntry> entry : sortedEntries) {
             RoutingEntry route = entry.getValue();
-            // Only display routes that are reachable (cost is not infinity)
-            if (route.getCost() < Integer.MAX_VALUE) {
+            // Optionally show unreachable nodes with "inf" cost
+            if (route.getCost() == Integer.MAX_VALUE) {
+                System.out.printf("%d %d inf%n",
+                        route.getDestination(),
+                        route.getNextHop());
+            } else {
                 System.out.printf("%d %d %d%n",
                         route.getDestination(),
                         route.getNextHop(),
