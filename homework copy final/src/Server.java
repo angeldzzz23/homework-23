@@ -1,6 +1,7 @@
 import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.UnknownHostException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.nio.ByteBuffer;
@@ -221,8 +222,10 @@ public class Server {
                         if (!running) {
                             listCommands();
                         }
-
                       break;
+                    case "myip":
+                        System.out.println(getCurrentIPAddress());
+                        break;
                     default:
                         System.out.println(command + " ERROR: Invalid command");
                 }
@@ -232,6 +235,15 @@ public class Server {
         }
     }
 
+    // this will print out the
+    public static String getCurrentIPAddress() {
+        try {
+            InetAddress inetAddress = InetAddress.getLocalHost();
+            return inetAddress.getHostAddress();
+        } catch (UnknownHostException e) {
+            return "Unable to determine IP address: " + e.getMessage();
+        }
+    }
     // this will print out the commands
 
     private void listCommands() {
