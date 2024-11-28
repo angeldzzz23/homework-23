@@ -1,6 +1,7 @@
 import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.UnknownHostException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.nio.ByteBuffer;
@@ -200,11 +201,6 @@ public class Server {
                         break;
                     case "display":
 
-//                        if (!running) {
-//                            System.out.println(command + " ERROR: Server not running");
-//                            continue;
-//                        }
-
                         handleDisplay();
                         break;
                     case "disable":
@@ -221,6 +217,15 @@ public class Server {
                         }
                         handleCrash();
                         return;
+
+                    case "list":
+                        if (!running) {
+                            listCommands();
+                        }
+                      break;
+                    case "myip":
+                        System.out.println(getCurrentIPAddress());
+                        break;
                     default:
                         System.out.println(command + " ERROR: Invalid command");
                 }
@@ -228,6 +233,30 @@ public class Server {
                 System.out.println(command + " ERROR: " + e.getMessage());
             }
         }
+    }
+
+    // this will print out the
+    public static String getCurrentIPAddress() {
+        try {
+            InetAddress inetAddress = InetAddress.getLocalHost();
+            return inetAddress.getHostAddress();
+        } catch (UnknownHostException e) {
+            return "Unable to determine IP address: " + e.getMessage();
+        }
+    }
+    // this will print out the commands
+
+    private void listCommands() {
+        System.out.println("Available Commands:");
+        System.out.println("  server     - Handles server commands.");
+        System.out.println("  update     - Updates the server state (requires the server to be running).");
+        System.out.println("  step       - Executes the next step in the server's workflow (requires the server to be running).");
+        System.out.println("  packets    - Displays the current packet information (requires the server to be running).");
+        System.out.println("  display    - Displays the current server status.");
+        System.out.println("  disable    - Disables a specific feature or component (requires the server to be running).");
+        System.out.println("  crash      - Simulates a server crash (requires the server to be running).");
+        System.out.println("  list       - Lists all available commands.");
+        System.out.println("  <other>    - Displays an error message for invalid commands.");
     }
 
     private void handleServerCommand(String[] parts) throws Exception {
