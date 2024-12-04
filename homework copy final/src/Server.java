@@ -292,71 +292,14 @@ public class Server {
         }
     }
 
-    // Creates the Routing message (general message formatting)
-    private byte[] routingMessage(int serverPort, String serverIp, Map<Integer, Connection> connections) {
-        ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
-        try{
-            byteStream.write(ByteBuffer.allocate(4).putInt(serverPort).array());
-            byteStream.write(InetAddress.getByName(serverIp).getAddress());
-
-            System.out.println("Number of update fields: " + connections.size());
-            System.out.println("Server Port: " + serverPort);
-            System.out.println("Server IP: " + serverIp);
-
-            for(Map.Entry<Integer, Connection> entry : connections.entrySet()) {
-                Connection connection = entry.getValue();
-                InetAddress connectionIp = connection.getSocket().getInetAddress();
-                int connectionPort = connection.getSocket().getPort();
-                int serverId = entry.getKey();
-                int cost = 10;
-
-                byteStream.write(connectionIp.getAddress());
-                byteStream.write(ByteBuffer.allocate(4).putInt(connectionPort).array());
-                // Write the connection's server ID (4 bytes)
-                byteStream.write(ByteBuffer.allocate(4).putInt(serverId).array());
-                // Write the connection's cost (4 bytes)
-                byteStream.write(ByteBuffer.allocate(4).putInt(cost).array());
-                // Reserved field (e.g., 0x0, 4 bytes)
-                byteStream.write(new byte[] { 0x00, 0x00, 0x00, 0x00 });
-                System.out.println("Server IP Address " + entry.getKey() + ": " + connectionIp.getHostAddress());
-                System.out.println("Server Port " + entry.getKey() + ": " + connectionPort);
-                System.out.println("Server ID " + entry.getKey() + ": " + serverId);
-                System.out.println("Cost " + entry.getKey() + ": " + cost);
-                System.out.println("Reserved Field (e.g., 0x0): 0x0");
-            }
-        }catch(Exception e){e.printStackTrace();}
-        byte[] messageBytes = byteStream.toByteArray();
-        sendMessage(messageBytes);
-
-        // Step 3: Optionally, print the raw bytes in hex format
-        System.out.println("\nRaw Message Bytes (Hex):");
-        for (byte b : messageBytes) {
-            System.out.printf("%02X ", b); // Print each byte as a two-digit hexadecimal value
-        }
-        System.out.println(); // Print a new line after byte information
-        return messageBytes;
-    }
-
-    // Helper method to construct byte array
-    private void sendMessage(byte[] messageBytes) {
-        System.out.println("Sending Message (in bytes)...");
-        for (byte b : messageBytes) {
-            System.out.printf("%02X ", b);
-        }
-        System.out.println();
-    }
-
-    // Sends the routing update
+    // Sends the routing table update to all neighbors
     private void sendRoutingUpdate() {
-        // Send the message to all neighbors
-        for (Map.Entry<Integer, Connection> entry : connections.entrySet()) {
-            // Generate the routing update message
-            byte[] message = routingMessage(serverPort,serverIp, connections);
-            Connection conn = entry.getValue();
+
+        RoutingUpdate update = new RoutingUpdate(serverId, routingTable);
+        for (Connection conn : connections.values()) {
             try {
-                conn.getOutputStream().write(message);
+                conn.getOutputStream().writeObject(update);
                 conn.getOutputStream().flush();
-                System.out.println("Sent update to server " + conn.getNeighborId());
             } catch (IOException e) {
                 System.err.println("Failed to send update to server " + conn.getNeighborId());
                 handleConnectionFailure(conn.getNeighborId());
@@ -364,86 +307,35 @@ public class Server {
         }
     }
 
-    // Handles the receiving of the routing update
+    // Handle receiving updates from a neighbor
     private void receiveUpdates(Connection conn) {
+
         while (running) {
             try {
-                // Read the first 2 bytes to get the number of entries
-                byte[] headerSizeBytes = new byte[2];
-                int headerBytesRead = conn.getInputStream().read(headerSizeBytes);
-                if (headerBytesRead != 2) {
-                    throw new IOException("Failed to read header size, bytes read: " + headerBytesRead);
-                }
-                DataInputStream dataStream = new DataInputStream(new ByteArrayInputStream(headerSizeBytes));
-                int numEntries = dataStream.readShort();
-                System.out.println("Number of routing entries: " + numEntries);
+                Object received = conn.getInputStream().readObject();
 
-                // Read sender information (6 bytes: 2 for port, 4 for IP)
-                byte[] senderInfoBytes = new byte[6];
-                int senderInfoBytesRead = 0;
-                while (senderInfoBytesRead < 6) {
-                    int read = conn.getInputStream().read(senderInfoBytes, senderInfoBytesRead, 6 - senderInfoBytesRead);
-                    if (read == -1) {
-                        throw new IOException("Unexpected end of stream while reading sender info.");
-                    }
-                    senderInfoBytesRead += read;
-                }
-                // Debugging print of received sender info
-                System.out.println("Sender info bytes: " + Arrays.toString(senderInfoBytes));
+                if (received instanceof RoutingUpdate) {
 
-                // Read each routing entry (12 bytes each: 4 for IP, 2 for port, 2 for ID, 4 for cost)
-                Map<Integer, RoutingEntry> receivedRoutes = new HashMap<>();
-                for (int i = 0; i < numEntries; i++) {
-                    byte[] entryBytes = new byte[12];
-                    int entryBytesRead = 0;
-                    while (entryBytesRead < 12) {
-                        int read = conn.getInputStream().read(entryBytes, entryBytesRead, 12 - entryBytesRead);
-                        if (read == -1) {
-                            throw new IOException("Unexpected end of stream while reading routing entry.");
-                        }
-                        entryBytesRead += read;
+                    RoutingUpdate update = (RoutingUpdate) received;
+                    packetCount++;
+                    lastUpdateTime.put(conn.getNeighborId(), System.currentTimeMillis());
+                    int neighborId = conn.getNeighborId();
+                    if (originalCosts.containsKey(neighborId)) {
+                        int originalCost = originalCosts.get(neighborId);
+                        routingTable.put(neighborId, new RoutingEntry(neighborId, neighborId, originalCost));
                     }
 
-                    // Debugging print of received entry bytes
-                    System.out.println("Routing entry bytes: " + Arrays.toString(entryBytes));
-
-                    DataInputStream entryStream = new DataInputStream(new ByteArrayInputStream(entryBytes));
-
-                    // Skip IP address and port since we don't need them for routing
-                    entryStream.skipBytes(6);
-
-                    // Read server ID and cost
-                    int serverId = entryStream.readShort();
-                    int cost = entryStream.readInt();
-
-                    receivedRoutes.put(serverId, new RoutingEntry(serverId, conn.getNeighborId(), cost));
+                    updateRoutingTable(update);
                 }
-                // Increment packet count
-                packetCount++;
-                lastUpdateTime.put(conn.getNeighborId(), System.currentTimeMillis());
-
-                int neighborId = conn.getNeighborId();
-                if (originalCosts.containsKey(neighborId)) {
-                    int originalCost = originalCosts.get(neighborId);
-                    routingTable.put(neighborId, new RoutingEntry(neighborId, neighborId, originalCost));
-                }
-
-                System.out.println("Received a message from server " + conn.getNeighborId());
-
-                // Create a RoutingUpdate object and update the routing table
-                RoutingUpdate update = new RoutingUpdate(conn.getNeighborId(), receivedRoutes);
-                updateRoutingTable(update);
-
             } catch (Exception e) {
                 if (running) {
-                    System.err.println("Error receiving update from server " + conn.getNeighborId() + ": " + e.getMessage());
+                    System.err.println("Error receiving update from server " + conn.getNeighborId());
                     handleConnectionFailure(conn.getNeighborId());
                 }
                 break;
             }
         }
     }
-
 
     //handling connection failure
     private void handleConnectionFailure(int neighborId) {
